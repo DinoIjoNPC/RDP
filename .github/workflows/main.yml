@@ -1,0 +1,713 @@
+name: Tailscale Windows App Connector - Production Ready
+
+on:
+  workflow_dispatch:
+    inputs:
+      hostname:
+        description: '🔧 Device hostname prefix'
+        required: false
+        default: 'windows-app-runner'
+        type: string
+      rdp_port:
+        description: '🔌 Custom RDP port (default: 3389)'
+        required: false
+        default: '3389'
+        type: string
+      enable_ssh:
+        description: '🔑 Enable SSH access'
+        required: false
+        default: true
+        type: boolean
+      enable_exit_node:
+        description: '🌐 Use as exit node'
+        required: false
+        default: false
+        type: boolean
+      advertise_routes:
+        description: '📡 Advertise network routes (e.g., 192.168.1.0/24)'
+        required: false
+        default: ''
+        type: string
+      enable_auto_recovery:
+        description: '🔄 Auto-recovery jika Tailscale mati'
+        required: false
+        default: true
+        type: boolean
+      recovery_interval:
+        description: '⏱️  Health check interval (detik)'
+        required: false
+        default: 60
+        type: number
+      session_duration:
+        description: '⏳ Session duration (menit, 0 = 3 days)'
+        required: false
+        default: 0
+        type: number
+
+env:
+  TAILSCALE_VERSION: "1.82.0"
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  secure-rdp:
+    runs-on: windows-latest
+    timeout-minutes: ${{ github.event.inputs.session_duration == 0 && 4320 || github.event.inputs.session_duration }}
+    
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🔐 Generate Secure Credentials
+        id: credentials
+        run: |
+          Write-Host "╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
+          Write-Host "║          GENERATING SECURE RDP CREDENTIALS                  ║" -ForegroundColor Cyan
+          Write-Host "╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+          
+          # Generate random username dengan prefix Skyro
+          $randomSuffix = -join ((65..90) + (97..122) | Get-Random -Count 8 | ForEach-Object {[char]$_})
+          $username = "Skyro_$randomSuffix"
+          
+          # Generate strong password (18 karakter)
+          Add-Type -AssemblyName System.Security
+          $charSet = @{
+              Upper   = [char[]](65..90)      # A-Z
+              Lower   = [char[]](97..122)     # a-z
+              Number  = [char[]](48..57)      # 0-9
+              Special = [char[]](33..47) + [char[]](58..64) +
+                        [char[]](91..96) + [char[]](123..126)
+          }
+          
+          # Generate 18 karakter password
+          $rawPassword = @()
+          $rawPassword += $charSet.Upper | Get-Random -Count 5
+          $rawPassword += $charSet.Lower | Get-Random -Count 5
+          $rawPassword += $charSet.Number | Get-Random -Count 5
+          $rawPassword += $charSet.Special | Get-Random -Count 3
+          $password = -join ($rawPassword | Sort-Object { Get-Random })
+          
+          # Save to environment
+          echo "RDP_USERNAME=$username" >> $env:GITHUB_ENV
+          echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
+          
+          Write-Host "✅ Username: $username" -ForegroundColor Green
+          Write-Host "✅ Password: [GENERATED - LIHAT DI BAWAH]" -ForegroundColor Green
+          Write-Host "`n" -ForegroundColor White
+
+      - name: 🖥️ Configure Advanced RDP Settings
+        run: |
+          Write-Host "╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
+          Write-Host "║          CONFIGURING REMOTE DESKTOP PROTOCOL                ║" -ForegroundColor Cyan
+          Write-Host "╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+          
+          $rdpPort = "${{ github.event.inputs.rdp_port || '3389' }}"
+          
+          try {
+              # Enable Remote Desktop
+              Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                              -Name "fDenyTSConnections" -Value 0 -Force -ErrorAction Stop
+              Write-Host "✅ Remote Desktop enabled" -ForegroundColor Green
+              
+              # Disable Network Level Authentication (for compatibility)
+              Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                              -Name "UserAuthentication" -Value 0 -Force -ErrorAction Stop
+              Write-Host "✅ Network Level Authentication disabled" -ForegroundColor Green
+              
+              # Set custom port
+              Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                              -Name "PortNumber" -Value $rdpPort -Force -ErrorAction Stop
+              Write-Host "✅ RDP Port set to: $rdpPort" -ForegroundColor Green
+              
+              # Configure firewall
+              netsh advfirewall firewall delete rule name="RDP-Tailscale" 2>$null
+              netsh advfirewall firewall add rule name="RDP-Tailscale" `
+                  dir=in action=allow protocol=TCP localport=$rdpPort 2>$null
+              Write-Host "✅ Firewall rule added for port $rdpPort" -ForegroundColor Green
+              
+              # Restart RDP service
+              Restart-Service -Name TermService -Force -ErrorAction Stop
+              Write-Host "✅ Remote Desktop service restarted" -ForegroundColor Green
+          }
+          catch {
+              Write-Host "⚠️  Error configuring RDP: $_" -ForegroundColor Yellow
+              Write-Host "   Continuing with default settings..." -ForegroundColor Yellow
+          }
+          
+          Write-Host "`n" -ForegroundColor White
+
+      - name: 👤 Create RDP User with Secure Password
+        run: |
+          Write-Host "╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
+          Write-Host "║          CREATING LOCAL RDP USER ACCOUNT                    ║" -ForegroundColor Cyan
+          Write-Host "╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+          
+          try {
+              $securePass = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
+              
+              # Create local user
+              New-LocalUser -Name $env:RDP_USERNAME `
+                           -Password $securePass `
+                           -FullName "Tailscale RDP Access" `
+                           -Description "Created by GitHub Actions - $(Get-Date)" `
+                           -AccountNeverExpires `
+                           -PasswordNeverExpires `
+                           -ErrorAction Stop
+              Write-Host "✅ User created: $env:RDP_USERNAME" -ForegroundColor Green
+              
+              # Add to groups
+              Add-LocalGroupMember -Group "Administrators" -Member $env:RDP_USERNAME -ErrorAction Stop
+              Write-Host "✅ Added to Administrators group" -ForegroundColor Green
+              
+              Add-LocalGroupMember -Group "Remote Desktop Users" -Member $env:RDP_USERNAME -ErrorAction Stop
+              Write-Host "✅ Added to Remote Desktop Users group" -ForegroundColor Green
+              
+              # Verify user creation
+              $userCheck = Get-LocalUser -Name $env:RDP_USERNAME -ErrorAction SilentlyContinue
+              if (-not $userCheck) {
+                  throw "User creation verification failed"
+              }
+          }
+          catch {
+              Write-Host "❌ Error creating user: $_" -ForegroundColor Red
+              exit 1
+          }
+          
+          Write-Host "`n" -ForegroundColor White
+
+      - name: 📦 Install Tailscale VPN
+        run: |
+          Write-Host "╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
+          Write-Host "║          INSTALLING TAILSCALE VPN CLIENT                    ║" -ForegroundColor Cyan
+          Write-Host "╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+          
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-${{ env.TAILSCALE_VERSION }}-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          
+          # Download with retry mechanism
+          $retryCount = 0
+          $maxRetries = 3
+          $downloaded = $false
+          
+          while (-not $downloaded -and $retryCount -lt $maxRetries) {
+              try {
+                  Write-Host "📥 Downloading Tailscale (attempt $($retryCount + 1)/$maxRetries)..." -ForegroundColor Yellow
+                  Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -ErrorAction Stop
+                  $downloaded = $true
+                  Write-Host "✅ Download successful" -ForegroundColor Green
+              }
+              catch {
+                  $retryCount++
+                  Write-Host "⚠️  Download failed: $_" -ForegroundColor Yellow
+                  if ($retryCount -lt $maxRetries) {
+                      Write-Host "⏳ Retrying in 5 seconds..." -ForegroundColor Yellow
+                      Start-Sleep -Seconds 5
+                  }
+              }
+          }
+          
+          if (-not $downloaded) {
+              Write-Host "❌ Failed to download Tailscale after $maxRetries attempts" -ForegroundColor Red
+              exit 1
+          }
+          
+          # Install silently
+          Write-Host "⚙️  Installing Tailscale..." -ForegroundColor Yellow
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          
+          # Verify installation
+          $tailscalePath = "${env:ProgramFiles}\Tailscale\tailscale.exe"
+          $tailscaledPath = "${env:ProgramFiles}\Tailscale\tailscaled.exe"
+          
+          if (Test-Path $tailscalePath) {
+              Write-Host "✅ Tailscale installed successfully" -ForegroundColor Green
+              Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+          }
+          else {
+              Write-Host "❌ Tailscale installation failed" -ForegroundColor Red
+              exit 1
+          }
+          
+          Write-Host "`n" -ForegroundColor White
+
+      - name: 🔌 Establish Tailscale Connection
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          Write-Host "╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
+          Write-Host "║          CONNECTING TO TAILSCALE NETWORK                    ║" -ForegroundColor Cyan
+          Write-Host "╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+          
+          $tailscalePath = "${env:ProgramFiles}\Tailscale\tailscale.exe"
+          $tailscaledPath = "${env:ProgramFiles}\Tailscale\tailscaled.exe"
+          $hostname = "${{ github.event.inputs.hostname || 'windows-app-runner' }}-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_NUMBER"
+          
+          # Check auth key
+          if (-not $env:TAILSCALE_AUTH_KEY) {
+              Write-Host "❌ TAILSCALE_AUTH_KEY not found in secrets!" -ForegroundColor Red
+              Write-Host "   Please add it to: Settings → Secrets and variables → Actions" -ForegroundColor Yellow
+              exit 1
+          }
+          
+          # Start service if not running
+          $service = Get-Service -Name Tailscaled -ErrorAction SilentlyContinue
+          if (-not $service -or $service.Status -ne 'Running') {
+              Write-Host "⚙️  Starting Tailscale service..." -ForegroundColor Yellow
+              Start-Process -FilePath $tailscaledPath -ArgumentList "/install", "/service" -Wait
+              Start-Sleep -Seconds 5
+          }
+          
+          # Build connection arguments
+          $connectArgs = @("up", 
+              "--authkey=$env:TAILSCALE_AUTH_KEY", 
+              "--hostname=$hostname",
+              "--accept-dns=true",
+              "--accept-routes=true"
+          )
+          
+          # Add optional features
+          if ("${{ github.event.inputs.enable_ssh }}" -eq "true") {
+              $connectArgs += "--ssh"
+              Write-Host "✅ SSH server enabled" -ForegroundColor Green
+          }
+          
+          if ("${{ github.event.inputs.enable_exit_node }}" -eq "true") {
+              $connectArgs += "--advertise-exit-node"
+              Write-Host "✅ Exit node enabled" -ForegroundColor Green
+          }
+          
+          if ("${{ github.event.inputs.advertise_routes }}" -ne "") {
+              $connectArgs += "--advertise-routes=${{ github.event.inputs.advertise_routes }}"
+              Write-Host "✅ Advertise routes: ${{ github.event.inputs.advertise_routes }}" -ForegroundColor Green
+          }
+          
+          # Connect to Tailscale
+          Write-Host "🔗 Connecting to Tailscale network..." -ForegroundColor Yellow
+          & $tailscalePath $connectArgs
+          
+          # Wait for IP assignment with timeout
+          $tsIP = $null
+          $retries = 0
+          $maxRetries = 30
+          
+          Write-Host "⏳ Waiting for IP address assignment..." -ForegroundColor Yellow
+          while (-not $tsIP -and $retries -lt $maxRetries) {
+              $tsIP = & $tailscalePath ip -4 2>$null
+              Start-Sleep -Seconds 2
+              $retries++
+              
+              if ($retries % 5 -eq 0) {
+                  Write-Host "   Still waiting... ($retries/$maxRetries)" -ForegroundColor Gray
+              }
+          }
+          
+          if (-not $tsIP) {
+              Write-Host "❌ Failed to get Tailscale IP address" -ForegroundColor Red
+              Write-Host "📊 Current status:" -ForegroundColor Yellow
+              & $tailscalePath status
+              exit 1
+          }
+          
+          # Get additional info
+          $status = & $tailscalePath status --json | ConvertFrom-Json
+          $dnsName = $status.Self.DNSName
+          
+          # Save to environment
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          echo "TAILSCALE_HOSTNAME=$hostname" >> $env:GITHUB_ENV
+          echo "TAILSCALE_DNS=$dnsName" >> $env:GITHUB_ENV
+          
+          Write-Host "✅ Connected to Tailscale!" -ForegroundColor Green
+          Write-Host "   IP Address: $tsIP" -ForegroundColor Cyan
+          Write-Host "   Hostname: $hostname" -ForegroundColor Cyan
+          Write-Host "   DNS Name: $dnsName" -ForegroundColor Cyan
+          
+          Write-Host "`n" -ForegroundColor White
+
+      - name: ✅ Verify RDP Accessibility
+        run: |
+          Write-Host "╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
+          Write-Host "║          VERIFYING RDP ACCESSIBILITY                        ║" -ForegroundColor Cyan
+          Write-Host "╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+          
+          $rdpPort = "${{ github.event.inputs.rdp_port || '3389' }}"
+          
+          # Check RDP service
+          $rdpService = Get-Service -Name TermService -ErrorAction SilentlyContinue
+          if ($rdpService.Status -eq "Running") {
+              Write-Host "✅ Remote Desktop Service: Running" -ForegroundColor Green
+          } else {
+              Write-Host "⚠️  Remote Desktop Service: $($rdpService.Status)" -ForegroundColor Yellow
+          }
+          
+          # Check port listening
+          $netstat = netstat -an | Select-String ":$rdpPort"
+          if ($netstat -match "LISTENING") {
+              Write-Host "✅ RDP Port $rdpPort: Listening" -ForegroundColor Green
+          } else {
+              Write-Host "⚠️  RDP Port $rdpPort: Not listening" -ForegroundColor Yellow
+          }
+          
+          # Test connectivity via Tailscale
+          try {
+              $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port $rdpPort -WarningAction SilentlyContinue
+              if ($testResult.TcpTestSucceeded) {
+                  Write-Host "✅ RDP accessible via Tailscale IP: $env:TAILSCALE_IP" -ForegroundColor Green
+              } else {
+                  Write-Host "⚠️  Cannot verify RDP via Tailscale (may still work)" -ForegroundColor Yellow
+              }
+          }
+          catch {
+              Write-Host "⚠️  Connectivity test failed: $_" -ForegroundColor Yellow
+          }
+          
+          Write-Host "`n" -ForegroundColor White
+
+      - name: 📄 Create Connection Files
+        run: |
+          Write-Host "╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
+          Write-Host "║          CREATING CONNECTION FILES                          ║" -ForegroundColor Cyan
+          Write-Host "╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+          
+          $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+          
+          # Create RDP file
+          $rdpFile = @"
+full address:s:$env:TAILSCALE_IP:${{ github.event.inputs.rdp_port || '3389' }}
+username:s:$env:RDP_USERNAME
+screen mode id:i:2
+desktopwidth:i:1920
+desktopheight:i:1080
+session bpp:i:32
+winposstr:s:0,1,0,0,800,600
+compression:i:1
+keyboardhook:i:2
+audiocapturemode:i:0
+videoplaybackmode:i:1
+connection type:i:7
+networkautodetect:i:1
+bandwidthautodetect:i:1
+displayconnectionbar:i:1
+enableworkspacereconnect:i:0
+disable wallpaper:i:0
+allow font smoothing:i:0
+allow desktop composition:i:0
+disable full window drag:i:1
+disable menu anims:i:1
+disable themes:i:0
+disable cursor setting:i:0
+bitmapcachepersistenable:i:1
+audiomode:i:0
+redirectprinters:i:0
+redirectsmartcards:i:0
+redirectclipboard:i:1
+redirectposdevices:i:0
+drivestoredirect:s:
+authentication level:i:0
+prompt for credentials:i:1
+negotiate security layer:i:1
+remoteapplicationmode:i:0
+"@
+          
+          Set-Content -Path "$env:RUNNER_TEMP\connection-$env:GITHUB_RUN_ID.rdp" -Value $rdpFile -Encoding ASCII
+          Write-Host "✅ RDP file created" -ForegroundColor Green
+          
+          # Create instructions file
+          $instructions = @"
+=============================================
+TAILSCALE WINDOWS APP CONNECTOR
+=============================================
+
+📋 CONNECTION DETAILS
+--------------------
+Generated: $timestamp
+Session ID: $env:GITHUB_RUN_ID
+
+🌐 NETWORK
+---------
+Tailscale IP: $env:TAILSCALE_IP
+Hostname: $env:TAILSCALE_HOSTNAME
+RDP Port: ${{ github.event.inputs.rdp_port || '3389' }}
+
+👤 CREDENTIALS
+------------
+Username: $env:RDP_USERNAME
+Password: $env:RDP_PASSWORD
+
+🚀 HOW TO CONNECT
+---------------
+1. Install Tailscale on your local machine
+2. Connect to same Tailscale network
+3. Open Windows App (Remote Desktop)
+4. Add PC with IP: $env:TAILSCALE_IP
+5. Login with credentials above
+
+⏱️ SESSION INFO
+-------------
+Started: $timestamp
+Duration: ${{ github.event.inputs.session_duration == 0 && '3 days' || github.event.inputs.session_duration + ' minutes' }}
+Auto-recovery: ${{ github.event.inputs.enable_auto_recovery }}
+
+⚠️  IMPORTANT
+-----------
+- Save these credentials NOW!
+- Password will NOT be shown again
+- Session ends when workflow is cancelled
+
+=============================================
+"@
+          
+          Set-Content -Path "$env:RUNNER_TEMP\instructions-$env:GITHUB_RUN_ID.txt" -Value $instructions
+          Write-Host "✅ Instructions file created" -ForegroundColor Green
+          
+          Write-Host "`n" -ForegroundColor White
+
+      - name: 📤 Upload Connection Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-app-connection-${{ github.run_id }}-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}\*.rdp
+            ${{ runner.temp }}\*.txt
+          retention-days: 3
+          if-no-files-found: warn
+
+      - name: 🎯 Display Connection Information
+        run: |
+          Clear-Host
+          Write-Host "`n" -ForegroundColor White
+          Write-Host "╔════════════════════════════════════════════════════════════════════════════════════════════╗" -ForegroundColor Magenta
+          Write-Host "║                                                                                            ║" -ForegroundColor Magenta
+          Write-Host "║                    🚀 TAILSCALE WINDOWS APP CONNECTOR - ACTIVE 🚀                         ║" -ForegroundColor Magenta
+          Write-Host "║                                                                                            ║" -ForegroundColor Magenta
+          Write-Host "╠════════════════════════════════════════════════════════════════════════════════════════════╣" -ForegroundColor Magenta
+          Write-Host "║                                                                                            ║" -ForegroundColor Magenta
+          Write-Host "║  📍 CONNECTION DETAILS                                                                     ║" -ForegroundColor Cyan
+          Write-Host "║  ──────────────────────────────────────────────────────────────────────────────────────   ║" -ForegroundColor Cyan
+          Write-Host "║                                                                                            ║" -ForegroundColor Magenta
+          Write-Host "║    🌐 Tailscale IP:     $($env:TAILSCALE_IP)" -ForegroundColor White
+          Write-Host "║    🖥️  Hostname:         $($env:TAILSCALE_HOSTNAME)" -ForegroundColor White
+          Write-Host "║    🔌 RDP Port:         ${{ github.event.inputs.rdp_port || '3389' }}" -ForegroundColor White
+          Write-Host "║                                                                                            ║" -ForegroundColor Magenta
+          Write-Host "║  👤 CREDENTIALS (SAVE NOW!)                                                               ║" -ForegroundColor Yellow
+          Write-Host "║  ──────────────────────────────────────────────────────────────────────────────────────   ║" -ForegroundColor Yellow
+          Write-Host "║                                                                                            ║" -ForegroundColor Magenta
+          Write-Host "║    👥 Username:         $($env:RDP_USERNAME)" -ForegroundColor Green
+          Write-Host "║    🔑 Password:         $($env:RDP_PASSWORD)" -ForegroundColor Red
+          Write-Host "║                                                                                            ║" -ForegroundColor Magenta
+          Write-Host "║  🔧 WINDOWS APP CONNECTION                                                                ║" -ForegroundColor Cyan
+          Write-Host "║  ──────────────────────────────────────────────────────────────────────────────────────   ║" -ForegroundColor Cyan
+          Write-Host "║                                                                                            ║" -ForegroundColor Magenta
+          Write-Host "║    1.  Buka Windows App (Remote Desktop)                                                  ║" -ForegroundColor White
+          Write-Host "║    2.  Klik 'Add PC' atau '+'                                                            ║" -ForegroundColor White
+          Write-Host "║    3.  Masukkan IP Address: $($env:TAILSCALE_IP)" -ForegroundColor White
+          Write-Host "║    4.  Masukkan Username: $($env:RDP_USERNAME)" -ForegroundColor White
+          Write-Host "║    5.  Masukkan Password: [lihat di atas]                                                ║" -ForegroundColor White
+          Write-Host "║    6.  Klik Connect                                                                       ║" -ForegroundColor White
+          Write-Host "║                                                                                            ║" -ForegroundColor Magenta
+          Write-Host "║  ⚡ SESSION INFORMATION                                                                    ║" -ForegroundColor Cyan
+          Write-Host "║  ──────────────────────────────────────────────────────────────────────────────────────   ║" -ForegroundColor Cyan
+          Write-Host "║                                                                                            ║" -ForegroundColor Magenta
+          Write-Host "║    ⏱️  Session ID:       $env:GITHUB_RUN_ID" -ForegroundColor White
+          Write-Host "║    ⏳ Duration:         $(${{ github.event.inputs.session_duration == 0 && '3 days' || github.event.inputs.session_duration + ' minutes' }})" -ForegroundColor White
+          Write-Host "║    🔄 Auto-recovery:    $(${{ github.event.inputs.enable_auto_recovery && '✅ Enabled' || '❌ Disabled' }})" -ForegroundColor White
+          Write-Host "║    📊 Check interval:   ${{ github.event.inputs.recovery_interval || 60 }} seconds" -ForegroundColor White
+          Write-Host "║                                                                                            ║" -ForegroundColor Magenta
+          Write-Host "║  📁 ARTIFACTS                                                                             ║" -ForegroundColor Cyan
+          Write-Host "║  ──────────────────────────────────────────────────────────────────────────────────────   ║" -ForegroundColor Cyan
+          Write-Host "║                                                                                            ║" -ForegroundColor Magenta
+          Write-Host "║    📄 RDP File:         Download dari Artifacts (connection-$env:GITHUB_RUN_ID.rdp)     ║" -ForegroundColor White
+          Write-Host "║    📋 Instructions:     Download dari Artifacts (instructions-$env:GITHUB_RUN_ID.txt)    ║" -ForegroundColor White
+          Write-Host "║                                                                                            ║" -ForegroundColor Magenta
+          Write-Host "║  ⚠️  WARNING                                                                               ║" -ForegroundColor Red
+          Write-Host "║  ──────────────────────────────────────────────────────────────────────────────────────   ║" -ForegroundColor Red
+          Write-Host "║                                                                                            ║" -ForegroundColor Magenta
+          Write-Host "║    • Password hanya ditampilkan SEKALI ini!                                               ║" -ForegroundColor Yellow
+          Write-Host "║    • Simpan credentials ini SEKARANG juga!                                               ║" -ForegroundColor Yellow
+          Write-Host "║    • Session akan BERAKHIR jika workflow di-cancel                                       ║" -ForegroundColor Yellow
+          Write-Host "║    • Gunakan 'Cancel workflow' untuk menghentikan session                               ║" -ForegroundColor Yellow
+          Write-Host "║                                                                                            ║" -ForegroundColor Magenta
+          Write-Host "╚════════════════════════════════════════════════════════════════════════════════════════════╝" -ForegroundColor Magenta
+          Write-Host "`n" -ForegroundColor White
+
+      - name: 🔄 Persistent Connection with Auto-Recovery
+        if: always()
+        run: |
+          Write-Host "`n" -ForegroundColor Cyan
+          Write-Host "╔════════════════════════════════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
+          Write-Host "║                    🔄 MAINTAINING PERSISTENT CONNECTION 🔄                                ║" -ForegroundColor Cyan
+          Write-Host "╚════════════════════════════════════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+          Write-Host "`n" -ForegroundColor Cyan
+          
+          $tailscalePath = "${env:ProgramFiles}\Tailscale\tailscale.exe"
+          $recoveryCount = 0
+          $maxRecoveryAttempts = 100
+          $checkInterval = ${{ github.event.inputs.recovery_interval || 60 }}
+          $autoRecovery = $${{ github.event.inputs.enable_auto_recovery || true }}
+          $lastRecoveryTime = $null
+          
+          function Test-TailscaleHealth {
+              param([string]$TailscalePath)
+              
+              try {
+                  # Check 1: Process exists
+                  $process = Get-Process -Name "tailscaled" -ErrorAction SilentlyContinue
+                  if (-not $process) { return $false }
+                  
+                  # Check 2: IP assigned
+                  $ip = & $TailscalePath ip -4 2>$null
+                  if (-not $ip) { return $false }
+                  
+                  # Check 3: Online status
+                  $status = & $TailscalePath status --json 2>$null | ConvertFrom-Json
+                  if (-not $status.Self.Online) { return $false }
+                  
+                  # Check 4: DNS resolution
+                  $dnsTest = Resolve-DnsName -Name "tailscale.com" -ErrorAction SilentlyContinue
+                  if (-not $dnsTest) { return $false }
+                  
+                  return $true
+              }
+              catch {
+                  return $false
+              }
+          }
+          
+          function Repair-Tailscale {
+              param(
+                  [string]$TailscalePath,
+                  [string]$AuthKey,
+                  [string]$Hostname,
+                  [int]$Attempt
+              )
+              
+              Write-Host "`n⚠️  [$(Get-Date -Format 'HH:mm:ss')] Tailscale down! Attempting recovery #$Attempt..." -ForegroundColor Yellow
+              
+              try {
+                  # Strategy 1: Quick restart
+                  Write-Host "  📋 Strategy 1: Quick service restart..." -ForegroundColor Gray
+                  Restart-Service -Name Tailscaled -Force -ErrorAction SilentlyContinue
+                  Start-Sleep -Seconds 10
+                  
+                  $ip = & $TailscalePath ip -4 2>$null
+                  if ($ip) {
+                      Write-Host "  ✅ Quick restart successful!" -ForegroundColor Green
+                      return $ip
+                  }
+                  
+                  # Strategy 2: Full reconnect
+                  Write-Host "  📋 Strategy 2: Full reconnect..." -ForegroundColor Gray
+                  & $TailscalePath down
+                  Start-Sleep -Seconds 5
+                  & $TailscalePath up --authkey=$AuthKey --hostname=$Hostname --reset
+                  Start-Sleep -Seconds 15
+                  
+                  $ip = & $TailscalePath ip -4 2>$null
+                  if ($ip) {
+                      Write-Host "  ✅ Full reconnect successful!" -ForegroundColor Green
+                      return $ip
+                  }
+                  
+                  # Strategy 3: Service reinstall
+                  Write-Host "  📋 Strategy 3: Service reinstall..." -ForegroundColor Gray
+                  & "${env:ProgramFiles}\Tailscale\tailscaled.exe" /uninstall /service 2>$null
+                  Start-Sleep -Seconds 3
+                  & "${env:ProgramFiles}\Tailscale\tailscaled.exe" /install /service 2>$null
+                  Start-Sleep -Seconds 5
+                  Start-Service -Name Tailscaled -ErrorAction SilentlyContinue
+                  Start-Sleep -Seconds 10
+                  & $TailscalePath up --authkey=$AuthKey --hostname=$Hostname
+                  Start-Sleep -Seconds 15
+                  
+                  $ip = & $TailscalePath ip -4 2>$null
+                  if ($ip) {
+                      Write-Host "  ✅ Service reinstall successful!" -ForegroundColor Green
+                      return $ip
+                  }
+                  
+                  Write-Host "  ❌ All recovery strategies failed" -ForegroundColor Red
+                  return $null
+              }
+              catch {
+                  Write-Host "  ❌ Recovery error: $_" -ForegroundColor Red
+                  return $null
+              }
+          }
+          
+          # Main monitoring loop
+          while ($true) {
+              $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+              $healthStatus = Test-TailscaleHealth -TailscalePath $tailscalePath
+              
+              if ($healthStatus) {
+                  # Reset recovery counter if healthy
+                  if ($recoveryCount -gt 0) {
+                      Write-Host "[$timestamp] ✅ Tailscale recovered - Reset counter" -ForegroundColor Green
+                      $recoveryCount = 0
+                  }
+                  
+                  # Normal heartbeat
+                  $currentIP = & $tailscalePath ip -4
+                  $status = & $tailscalePath status --json | ConvertFrom-Json
+                  $peerCount = ($status.Peer | Measure-Object).Count
+                  Write-Host "[$timestamp] ✅ Tailscale: Connected | IP: $currentIP | Peers: $peerCount" -ForegroundColor Green
+              }
+              else {
+                  Write-Host "[$timestamp] ⚠️  Tailscale: Disconnected/Unhealthy" -ForegroundColor Yellow
+                  
+                  if ($autoRecovery -and $recoveryCount -lt $maxRecoveryAttempts) {
+                      $recoveryCount++
+                      $newIP = Repair-Tailscale -TailscalePath $tailscalePath `
+                                               -AuthKey ${{ secrets.TAILSCALE_AUTH_KEY }} `
+                                               -Hostname "${{ github.event.inputs.hostname || 'windows-app-runner' }}-$env:GITHUB_RUN_ID" `
+                                               -Attempt $recoveryCount
+                      
+                      if ($newIP) {
+                          # Update environment
+                          $env:TAILSCALE_IP = $newIP
+                          
+                          # Recreate RDP file with new IP
+                          $rdpFile = @"
+full address:s:$newIP:${{ github.event.inputs.rdp_port || '3389' }}
+username:s:$env:RDP_USERNAME
+"@
+                          Set-Content -Path "$env:RUNNER_TEMP\connection-$env:GITHUB_RUN_ID.rdp" -Value $rdpFile -Encoding ASCII
+                          
+                          Write-Host "[$timestamp] ✅ Recovery complete! New IP: $newIP" -ForegroundColor Green
+                      }
+                  }
+                  elseif ($recoveryCount -ge $maxRecoveryAttempts) {
+                      Write-Host "[$timestamp] ❌ Max recovery attempts reached. Manual intervention required." -ForegroundColor Red
+                  }
+              }
+              
+              Start-Sleep -Seconds $checkInterval
+          }
+
+      - name: 🧹 Cleanup Resources
+        if: always()
+        run: |
+          Write-Host "`n╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Yellow
+          Write-Host "║          CLEANING UP RESOURCES                               ║" -ForegroundColor Yellow
+          Write-Host "╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Yellow
+          
+          # Disconnect Tailscale
+          $tailscalePath = "${env:ProgramFiles}\Tailscale\tailscale.exe"
+          if (Test-Path $tailscalePath) {
+              Write-Host "📤 Disconnecting from Tailscale..." -ForegroundColor Gray
+              & $tailscalePath logout
+              & $tailscalePath down
+              Write-Host "✅ Tailscale disconnected" -ForegroundColor Green
+          }
+          
+          # Remove RDP user
+          if (Get-LocalUser -Name $env:RDP_USERNAME -ErrorAction SilentlyContinue) {
+              Write-Host "👤 Removing RDP user: $env:RDP_USERNAME..." -ForegroundColor Gray
+              Remove-LocalUser -Name $env:RDP_USERNAME -Confirm:$false
+              Write-Host "✅ User removed" -ForegroundColor Green
+          }
+          
+          # Clean temp files
+          Get-ChildItem -Path "$env:RUNNER_TEMP\*.rdp", "$env:RUNNER_TEMP\*.txt" -ErrorAction SilentlyContinue | 
+              Remove-Item -Force -ErrorAction SilentlyContinue
+          
+          Write-Host "✅ Cleanup completed at $(Get-Date)" -ForegroundColor Green
