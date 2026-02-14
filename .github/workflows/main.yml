@@ -1,4 +1,4 @@
-name: 🚀 SkyRDP - UNLIMITED (FINAL FIX)
+name: 🚀 SkyRDP - UNLIMITED (FINAL FIX - NO CLEAR HOST)
 on:
   workflow_dispatch:
 
@@ -14,13 +14,16 @@ jobs:
     steps:
       - name: ⚡ Start Session
         run: |
-          Write-Host "╔════════════════════════════════╗" -ForegroundColor Cyan
-          Write-Host "║    SKYRDP UNLIMITED EDITION   ║" -ForegroundColor Cyan
-          Write-Host "╚════════════════════════════════╝" -ForegroundColor Cyan
-          Write-Host "Session: $env:GITHUB_RUN_ID" -ForegroundColor Yellow
+          Write-Host "══════════════════════════════════════════════" -ForegroundColor Cyan
+          Write-Host "     SKYRDP UNLIMITED EDITION - FINAL FIX    " -ForegroundColor Cyan
+          Write-Host "══════════════════════════════════════════════" -ForegroundColor Cyan
+          Write-Host "Session ID: $env:GITHUB_RUN_ID" -ForegroundColor Yellow
+          Write-Host "Started at: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Gray
 
       - name: 🔧 Setup RDP
         run: |
+          Write-Host "📡 Configuring RDP..." -ForegroundColor Cyan
+          
           # Enable RDP
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           
@@ -29,11 +32,13 @@ jobs:
           netsh advfirewall firewall add rule name="RDP-SkyRDP" dir=in action=allow protocol=TCP localport=3389
           
           Restart-Service -Name TermService -Force
-          Write-Host "✅ RDP OK" -ForegroundColor Green
+          Write-Host "✅ RDP Configured" -ForegroundColor Green
 
       - name: 👤 Create User
         run: |
-          # Generate password simple
+          Write-Host "👤 Creating user..." -ForegroundColor Cyan
+          
+          # Generate password
           $pass = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 12 | % {[char]$_})
           
           # Create user
@@ -42,221 +47,117 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member "$env:RDP_USER"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "$env:RDP_USER"
           
-          # SIMPLE - langsung set variable tanpa JSON
+          # Save credentials
           Write-Host "USERNAME=$env:RDP_USER" >> $env:GITHUB_ENV
           Write-Host "PASSWORD=$pass" >> $env:GITHUB_ENV
           
-          Write-Host "✅ User: $env:RDP_USER" -ForegroundColor Green
-          Write-Host "✅ Pass: $pass" -ForegroundColor Green
+          Write-Host "✅ User created: $env:RDP_USER" -ForegroundColor Green
+          Write-Host "Password: $pass" -ForegroundColor Yellow
 
       - name: 🔗 Install Tailscale
         run: |
-          Write-Host "📦 Installing Tailscale..."
+          Write-Host "📦 Installing Tailscale..." -ForegroundColor Cyan
+          
           $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
           $msi = "$env:TEMP\tailscale.msi"
+          
           Invoke-WebRequest -Uri $url -OutFile $msi -UseBasicParsing
           Start-Process msiexec.exe -ArgumentList "/i", "`"$msi`"", "/quiet", "/norestart" -Wait
           Remove-Item $msi -Force
-          Write-Host "✅ Tailscale OK" -ForegroundColor Green
+          
+          Write-Host "✅ Tailscale installed" -ForegroundColor Green
 
       - name: 🌐 Connect Tailscale
         run: |
+          Write-Host "🌐 Connecting to Tailscale..." -ForegroundColor Cyan
+          
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname="$env:TAILSCALE_APP_NAME-$env:GITHUB_RUN_ID"
           
           # Get IP
+          Write-Host "⏳ Waiting for IP assignment..." -ForegroundColor Yellow
           $ip = $null
-          for ($i=0; $i -lt 10; $i++) {
-              $ip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              if ($ip) { break }
+          for ($i=1; $i -le 10; $i++) {
+              $ip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4 2>$null
+              if ($ip) { 
+                  Write-Host "✅ IP assigned after $i attempts" -ForegroundColor Green
+                  break 
+              }
+              Write-Host "   Attempt $i/10..."
               Start-Sleep -Seconds 5
           }
           
+          if (-not $ip) {
+              Write-Error "❌ Failed to get Tailscale IP"
+              exit 1
+          }
+          
           Write-Host "IP=$ip" >> $env:GITHUB_ENV
-          Write-Host "✅ IP: $ip" -ForegroundColor Green
+          Write-Host "✅ Tailscale IP: $ip" -ForegroundColor Green
 
-      - name: 🎯 Show Info
+      - name: 🎯 Show Connection Info
         run: |
-          Clear-Host
+          # Test connection
+          Write-Host "🛡️ Testing RDP connection..." -ForegroundColor Cyan
+          $test = Test-NetConnection -ComputerName $env:IP -Port 3389 -WarningAction SilentlyContinue
+          
+          if ($test.TcpTestSucceeded) {
+              Write-Host "✅ RDP Port 3389 is OPEN" -ForegroundColor Green
+          } else {
+              Write-Host "⚠️ RDP Port test failed - but will continue" -ForegroundColor Yellow
+          }
+          
+          # Show info WITHOUT Clear-Host
           Write-Host ""
-          Write-Host "╔══════════════════════════════════════╗" -ForegroundColor Cyan
-          Write-Host "║         🔐 RDP READY TO USE         ║" -ForegroundColor Cyan
-          Write-Host "╠══════════════════════════════════════╣" -ForegroundColor Cyan
-          Write-Host "║" -ForegroundColor Cyan -NoNewline
-          Write-Host "  IP Address  : $env:IP:3389" -ForegroundColor Green
-          Write-Host "║" -ForegroundColor Cyan -NoNewline
-          Write-Host "  Username    : $env:USERNAME" -ForegroundColor Yellow
-          Write-Host "║" -ForegroundColor Cyan -NoNewline
-          Write-Host "  Password    : $env:PASSWORD" -ForegroundColor Red
-          Write-Host "╠══════════════════════════════════════╣" -ForegroundColor Cyan
-          Write-Host "║" -ForegroundColor Cyan -NoNewline
-          Write-Host "  Connect: mstsc /v:$env:IP:3389" -ForegroundColor White
-          Write-Host "╚══════════════════════════════════════╝" -ForegroundColor Cyan
+          Write-Host "══════════════════════════════════════════════════" -ForegroundColor Cyan
+          Write-Host "           🔐 RDP ACCESS INFORMATION            " -ForegroundColor Cyan
+          Write-Host "══════════════════════════════════════════════════" -ForegroundColor Cyan
+          Write-Host ""
+          Write-Host "  🌐 IP Address  : $env:IP" -ForegroundColor Green
+          Write-Host "  🔌 Port        : 3389" -ForegroundColor Green
+          Write-Host "  👤 Username    : $env:USERNAME" -ForegroundColor Yellow
+          Write-Host "  🔑 Password    : $env:PASSWORD" -ForegroundColor Red
+          Write-Host ""
+          Write-Host "  📝 Connect CMD : mstsc /v:$env`:3389" -ForegroundColor White
+          Write-Host ""
+          Write-Host "══════════════════════════════════════════════════" -ForegroundColor Cyan
+          Write-Host "  ⏰ Session started at: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Gray
+          Write-Host "  ⏳ Max duration: 6 hours (auto-stop by GitHub)" -ForegroundColor Yellow
+          Write-Host "══════════════════════════════════════════════════" -ForegroundColor Cyan
           Write-Host ""
 
-      - name: 🔄 Keep Alive
-        run: |
-          Write-Host "❤️ UNLIMITED MODE - Jalan terus sampai di-cancel" -ForegroundColor Green
-          while ($true) {
-              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] RDP: $env:IP:3389 | User: $env:USERNAME" -ForegroundColor Green
-              Start-Sleep -Seconds 60
-          }              # SIMPLE FORMAT - No JSON, langsung string biasa
-              echo "RDP_USERNAME=$env:RDP_USER" >> $env:GITHUB_ENV
-              echo "RDP_PASSWORD=$PASSWORD" >> $env:GITHUB_ENV
-              echo "RDP_TIMESTAMP=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" >> $env:GITHUB_ENV
-              
-              Write-Host "✅ Admin user created successfully" -ForegroundColor Green
-              Write-Host "Username: $env:RDP_USER" -ForegroundColor Yellow
-              Write-Host "Password: $PASSWORD" -ForegroundColor Green
-              
-          } catch {
-              Write-Error "Failed to create user: $_"
-              exit 1
-          }
-
-      - name: 🔗 Install Tailscale
-        run: |
-          try {
-              Write-Host "📦 Installing Tailscale..." -ForegroundColor Cyan
-              
-              $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-              $installerPath = "$env:TEMP\tailscale.msi"
-              
-              Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -UseBasicParsing
-              Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-              Remove-Item $installerPath -Force
-              
-              Start-Sleep -Seconds 10
-              Write-Host "✅ Tailscale installed" -ForegroundColor Green
-              
-          } catch {
-              Write-Error "Tailscale installation failed: $_"
-              exit 1
-          }
-
-      - name: 🌐 Connect to Tailscale
-        run: |
-          try {
-              Write-Host "🌐 Connecting to Tailscale network..." -ForegroundColor Cyan
-              
-              $hostname = "$env:TAILSCALE_APP_NAME-$env:GITHUB_RUN_ID"
-              
-              & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
-                --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
-                --hostname=$hostname
-              
-              # Get IP
-              $tsIP = $null
-              $ipRetries = 0
-              while (-not $tsIP -and $ipRetries -lt 15) {
-                  $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-                  Start-Sleep -Seconds 5
-                  $ipRetries++
-              }
-              
-              if (-not $tsIP) {
-                  throw "Tailscale IP not assigned"
-              }
-              
-              echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-              Write-Host "✅ Connected to Tailscale at IP: $tsIP" -ForegroundColor Green
-              
-          } catch {
-              Write-Error "Tailscale connection failed: $_"
-              exit 1
-          }
-
-      - name: 🛡️ Show Connection Info
-        run: |
-          try {
-              Write-Host "🛡️ Verifying RDP accessibility..." -ForegroundColor Cyan
-              
-              $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389 -WarningAction SilentlyContinue
-              if (-not $testResult.TcpTestSucceeded) {
-                  throw "Cannot establish RDP connection"
-              }
-              
-              # Clear and show banner
-              Clear-Host
-              Write-Host ""
-              Write-Host "╔══════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-              Write-Host "║                    🔐 UNLIMITED RDP ACCESS                       ║" -ForegroundColor Cyan
-              Write-Host "╠══════════════════════════════════════════════════════════════════╣" -ForegroundColor Cyan
-              Write-Host "║" -ForegroundColor Cyan -NoNewline
-              Write-Host "  🆔 Session ID    : $env:GITHUB_RUN_ID" -ForegroundColor White
-              Write-Host "║" -ForegroundColor Cyan -NoNewline
-              Write-Host "  🌐 RDP Address   : $env:TAILSCALE_IP:3389" -ForegroundColor Green
-              Write-Host "║" -ForegroundColor Cyan -NoNewline
-              Write-Host "  👤 Username      : $env:RDP_USERNAME" -ForegroundColor Yellow
-              Write-Host "║" -ForegroundColor Cyan -NoNewline
-              Write-Host "  🔑 Password      : $env:RDP_PASSWORD" -ForegroundColor Red
-              Write-Host "║" -ForegroundColor Cyan -NoNewline
-              Write-Host "  ⏰ Started       : $env:RDP_TIMESTAMP" -ForegroundColor Gray
-              Write-Host "║" -ForegroundColor Cyan -NoNewline
-              Write-Host "  ♾️  Mode          : UNLIMITED (jalan terus)" -ForegroundColor Magenta
-              Write-Host "╠══════════════════════════════════════════════════════════════════╣" -ForegroundColor Cyan
-              Write-Host "║" -ForegroundColor Cyan -NoNewline
-              Write-Host "  📝 QUICK CONNECT: mstsc /v:$env:TAILSCALE_IP:3389" -ForegroundColor White
-              Write-Host "║" -ForegroundColor Cyan -NoNewline
-              Write-Host "  🛑 STOP SESSION : Cancel job di GitHub Actions" -ForegroundColor Red
-              Write-Host "╚══════════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
-              Write-Host ""
-              
-          } catch {
-              Write-Error "Connection verification failed: $_"
-              exit 1
-          }
-
-      - name: 🔄 UNLIMITED Mode - Keep Alive Forever
+      - name: 🔄 Keep Alive - UNLIMITED MODE
         run: |
           Write-Host ""
-          Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Green
-          Write-Host "║        🚀 UNLIMITED MODE AKTIF - JALAN TERUS 🚀           ║" -ForegroundColor Green
-          Write-Host "╠════════════════════════════════════════════════════════════╣" -ForegroundColor Green
-          Write-Host "║" -ForegroundColor Green -NoNewline
-          Write-Host "  📍 RDP IP      : $env:TAILSCALE_IP:3389" -ForegroundColor White
-          Write-Host "║" -ForegroundColor Green -NoNewline
-          Write-Host "  👤 Username    : $env:RDP_USERNAME" -ForegroundColor Yellow
-          Write-Host "║" -ForegroundColor Green -NoNewline
-          Write-Host "  🔑 Password    : $env:RDP_PASSWORD" -ForegroundColor Red
-          Write-Host "║" -ForegroundColor Green -NoNewline
-          Write-Host "  🛑 Cara stop   : Klik 'Cancel workflow' di GitHub" -ForegroundColor Red
-          Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Green
+          Write-Host "══════════════════════════════════════════════════" -ForegroundColor Green
+          Write-Host "     🚀 UNLIMITED MODE - JALAN TERUS           " -ForegroundColor Green
+          Write-Host "══════════════════════════════════════════════════" -ForegroundColor Green
+          Write-Host ""
+          Write-Host "📍 IP: $env:IP:3389"
+          Write-Host "👤 User: $env:USERNAME"
+          Write-Host "🔑 Pass: $env:PASSWORD"
+          Write-Host ""
+          Write-Host "🛑 STOP: Klik 'Cancel workflow' di GitHub"
+          Write-Host "══════════════════════════════════════════════════" -ForegroundColor Green
           Write-Host ""
           
-          $heartbeatCount = 0
-          $reconnectCount = 0
-          
+          $counter = 0
           while ($true) {
-              try {
-                  $heartbeatCount++
+              $counter++
+              $now = Get-Date -Format "HH:mm:ss"
+              
+              if ($counter % 2 -eq 0) {  # Every 2 minutes
+                  Write-Host "[$now] ❤️ RDP ACTIVE - IP: $env:IP:3389" -ForegroundColor Green
                   
-                  # Check connection every 30 seconds
-                  if ($heartbeatCount % 6 -eq 0) {  # Every 3 minutes
-                      $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389 -WarningAction SilentlyContinue
-                      
-                      if (-not $testResult.TcpTestSucceeded) {
-                          $reconnectCount++
-                          Write-Host "[$(Get-Date -Format 'HH:mm:ss')] ⚠️ Koneksi terputus! Mencoba reconnect... ($reconnectCount)" -ForegroundColor Yellow
-                          
-                          # Try to reconnect Tailscale
-                          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname="$env:TAILSCALE_APP_NAME-$env:GITHUB_RUN_ID-reconnect" 2>$null
-                          
-                          # Restart RDP service
-                          Restart-Service -Name TermService -Force 2>$null
-                          
-                          Start-Sleep -Seconds 10
+                  # Check connection every 10 minutes
+                  if ($counter % 10 -eq 0) {
+                      $test = Test-NetConnection -ComputerName $env:IP -Port 3389 -WarningAction SilentlyContinue
+                      if ($test.TcpTestSucceeded) {
+                          Write-Host "   ✅ Connection OK" -ForegroundColor Gray
+                      } else {
+                          Write-Host "   ⚠️ Connection check failed" -ForegroundColor Yellow
                       }
                   }
-                  
-                  # Normal heartbeat - show every 60 seconds
-                  if ($heartbeatCount % 2 -eq 0) {  # Every minute
-                      Write-Host "[$(Get-Date -Format 'HH:mm:ss')] ❤️ RDP Active - IP: $env:TAILSCALE_IP | Reconnects: $reconnectCount" -ForegroundColor Green
-                  }
-                  
-                  Start-Sleep -Seconds 30
-                  
-              } catch {
-                  Write-Host "[$(Get-Date -Format 'HH:mm:ss')] ⚠️ Error in monitor: $_" -ForegroundColor Red
-                  Start-Sleep -Seconds 60
               }
+              
+              Start-Sleep -Seconds 60
           }
