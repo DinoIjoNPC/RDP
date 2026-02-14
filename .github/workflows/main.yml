@@ -1,21 +1,10 @@
-name: 🚀 SkyRDP Premium - UNLIMITED EDITION
+name: 🚀 SkyRDP - UNLIMITED (FINAL FIX)
 on:
   workflow_dispatch:
-    inputs:
-      mode:
-        description: '⏱️ Mode Session'
-        required: true
-        default: 'unlimited'
-        type: choice
-        options:
-          - 'unlimited'
-          - 'timed'
 
 env:
-  RDP_USER: "SkyroAdmin"
+  RDP_USER: "Skyro"
   TAILSCALE_APP_NAME: "SkyRDP-Session"
-  MAX_RETRIES: 3
-  RETRY_DELAY: 10
 
 jobs:
   secure-rdp:
@@ -23,87 +12,94 @@ jobs:
     timeout-minutes: 360
     
     steps:
-      - name: ⚡ Initialize Session
+      - name: ⚡ Start Session
         run: |
-          Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-          Write-Host "║        SKYRDP PREMIUM - UNLIMITED EDITION 🚀              ║" -ForegroundColor Cyan
-          Write-Host "╠════════════════════════════════════════════════════════════╣" -ForegroundColor Cyan
-          Write-Host "║" -ForegroundColor Cyan -NoNewline
-          Write-Host "  🚀 Mode: UNLIMITED (jalan terus sampai di-stop)" -ForegroundColor Green
-          Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
-          Write-Host ""
-          Write-Host "Session ID: $env:GITHUB_RUN_ID" -ForegroundColor White
-          Write-Host "Started at: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
+          Write-Host "╔════════════════════════════════╗" -ForegroundColor Cyan
+          Write-Host "║    SKYRDP UNLIMITED EDITION   ║" -ForegroundColor Cyan
+          Write-Host "╚════════════════════════════════╝" -ForegroundColor Cyan
+          Write-Host "Session: $env:GITHUB_RUN_ID" -ForegroundColor Yellow
 
-      - name: 🔧 Configure Enhanced RDP Settings
+      - name: 🔧 Setup RDP
         run: |
-          try {
-              Write-Host "📡 Configuring RDP settings..." -ForegroundColor Cyan
-              
-              # Enable Remote Desktop
-              Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                             -Name "fDenyTSConnections" -Value 0 -Force
-              Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "UserAuthentication" -Value 0 -Force
-              
-              # Disable all timeouts
-              Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "MaxConnectionTime" -Value 0 -Force
-              Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "MaxDisconnectionTime" -Value 0 -Force
-              Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "MaxIdleTime" -Value 0 -Force
-              
-              # Firewall
-              netsh advfirewall firewall delete rule name="RDP-SkyRDP" 2>$null
-              netsh advfirewall firewall add rule name="RDP-SkyRDP" `
-                dir=in action=allow protocol=TCP localport=3389
-              
-              Restart-Service -Name TermService -Force
-              
-              Write-Host "✅ RDP configured successfully" -ForegroundColor Green
-              
-          } catch {
-              Write-Error "RDP configuration error: $_"
-              exit 1
+          # Enable RDP
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          
+          # Firewall
+          netsh advfirewall firewall delete rule name="RDP-SkyRDP" 2>$null
+          netsh advfirewall firewall add rule name="RDP-SkyRDP" dir=in action=allow protocol=TCP localport=3389
+          
+          Restart-Service -Name TermService -Force
+          Write-Host "✅ RDP OK" -ForegroundColor Green
+
+      - name: 👤 Create User
+        run: |
+          # Generate password simple
+          $pass = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 12 | % {[char]$_})
+          
+          # Create user
+          $secPass = ConvertTo-SecureString $pass -AsPlainText -Force
+          New-LocalUser -Name "$env:RDP_USER" -Password $secPass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "$env:RDP_USER"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "$env:RDP_USER"
+          
+          # SIMPLE - langsung set variable tanpa JSON
+          Write-Host "USERNAME=$env:RDP_USER" >> $env:GITHUB_ENV
+          Write-Host "PASSWORD=$pass" >> $env:GITHUB_ENV
+          
+          Write-Host "✅ User: $env:RDP_USER" -ForegroundColor Green
+          Write-Host "✅ Pass: $pass" -ForegroundColor Green
+
+      - name: 🔗 Install Tailscale
+        run: |
+          Write-Host "📦 Installing Tailscale..."
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $msi = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $url -OutFile $msi -UseBasicParsing
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$msi`"", "/quiet", "/norestart" -Wait
+          Remove-Item $msi -Force
+          Write-Host "✅ Tailscale OK" -ForegroundColor Green
+
+      - name: 🌐 Connect Tailscale
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname="$env:TAILSCALE_APP_NAME-$env:GITHUB_RUN_ID"
+          
+          # Get IP
+          $ip = $null
+          for ($i=0; $i -lt 10; $i++) {
+              $ip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              if ($ip) { break }
+              Start-Sleep -Seconds 5
           }
+          
+          Write-Host "IP=$ip" >> $env:GITHUB_ENV
+          Write-Host "✅ IP: $ip" -ForegroundColor Green
 
-      - name: 👤 Create Secure Admin User
+      - name: 🎯 Show Info
         run: |
-          try {
-              Write-Host "👤 Creating secure admin user..." -ForegroundColor Cyan
-              
-              # Generate strong password
-              Add-Type -AssemblyName System.Security
-              
-              function Generate-SecurePassword {
-                  $length = 20
-                  $charSet = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%^&*'.ToCharArray()
-                  $rng = [System.Security.Cryptography.RNGCryptoServiceProvider]::new()
-                  $bytes = [byte[]]::new($length)
-                  $rng.GetBytes($bytes)
-                  
-                  $password = -join ($bytes | ForEach-Object {
-                      $charSet[$_ % $charSet.Length]
-                  })
-                  
-                  return $password
-              }
-              
-              $PASSWORD = Generate-SecurePassword
-              $securePass = ConvertTo-SecureString $PASSWORD -AsPlainText -Force
-              
-              # Remove existing user if present
-              if (Get-LocalUser -Name $env:RDP_USER -ErrorAction SilentlyContinue) {
-                  Remove-LocalUser -Name $env:RDP_USER -Confirm:$false
-              }
-              
-              # Create new user
-              New-LocalUser -Name $env:RDP_USER -Password $securePass -AccountNeverExpires -PasswordNeverExpires
-              Add-LocalGroupMember -Group "Administrators" -Member $env:RDP_USER
-              Add-LocalGroupMember -Group "Remote Desktop Users" -Member $env:RDP_USER
-              
-              # SIMPLE FORMAT - No JSON, langsung string biasa
+          Clear-Host
+          Write-Host ""
+          Write-Host "╔══════════════════════════════════════╗" -ForegroundColor Cyan
+          Write-Host "║         🔐 RDP READY TO USE         ║" -ForegroundColor Cyan
+          Write-Host "╠══════════════════════════════════════╣" -ForegroundColor Cyan
+          Write-Host "║" -ForegroundColor Cyan -NoNewline
+          Write-Host "  IP Address  : $env:IP:3389" -ForegroundColor Green
+          Write-Host "║" -ForegroundColor Cyan -NoNewline
+          Write-Host "  Username    : $env:USERNAME" -ForegroundColor Yellow
+          Write-Host "║" -ForegroundColor Cyan -NoNewline
+          Write-Host "  Password    : $env:PASSWORD" -ForegroundColor Red
+          Write-Host "╠══════════════════════════════════════╣" -ForegroundColor Cyan
+          Write-Host "║" -ForegroundColor Cyan -NoNewline
+          Write-Host "  Connect: mstsc /v:$env:IP:3389" -ForegroundColor White
+          Write-Host "╚══════════════════════════════════════╝" -ForegroundColor Cyan
+          Write-Host ""
+
+      - name: 🔄 Keep Alive
+        run: |
+          Write-Host "❤️ UNLIMITED MODE - Jalan terus sampai di-cancel" -ForegroundColor Green
+          while ($true) {
+              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] RDP: $env:IP:3389 | User: $env:USERNAME" -ForegroundColor Green
+              Start-Sleep -Seconds 60
+          }              # SIMPLE FORMAT - No JSON, langsung string biasa
               echo "RDP_USERNAME=$env:RDP_USER" >> $env:GITHUB_ENV
               echo "RDP_PASSWORD=$PASSWORD" >> $env:GITHUB_ENV
               echo "RDP_TIMESTAMP=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" >> $env:GITHUB_ENV
