@@ -5,47 +5,43 @@ jobs:
   rdp:
     runs-on: windows-latest
     timeout-minutes: 360
-    
+    defaults:
+      run:
+        shell: pwsh
+
     steps:
     - name: 1. Setup RDP
       run: |
-        # Enable RDP
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
-        # Firewall
         netsh advfirewall firewall add rule name="RDP" dir=in action=allow protocol=TCP localport=3389
-        # Restart service
         Restart-Service -Name TermService -Force
         echo "RDP OK"
 
     - name: 2. Create User
       run: |
-        # Username: Skyro
-        # Password: random 8 digit
-        $pass = -join ((1..8) | % { [char]((65..90)+(97..122)+(48..57) | Get-Random) })
+        $u = -join ((65..90)  | Get-Random -Count 4 | % {[char]$_})
+        $l = -join ((97..122) | Get-Random -Count 4 | % {[char]$_})
+        $d = -join ((48..57)  | Get-Random -Count 4 | % {[char]$_})
+        $pass = -join (($u + $l + $d + "-_").ToCharArray() | Get-Random -Count 14)
         $secpass = ConvertTo-SecureString $pass -AsPlainText -Force
-        New-LocalUser -Name "Skyro" -Password $secpass
+        New-LocalUser -Name "Skyro" -Password $secpass -PasswordNeverExpires
         Add-LocalGroupMember -Group "Administrators" -Member "Skyro"
         Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Skyro"
-        # Simpan password
-        echo "PASSWORD=$pass" >> $env:GITHUB_ENV
-        echo "Username: Skyro"
-        echo "Password: $pass"
+        "PASSWORD=$pass" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+        echo "User dibuat: Skyro"
 
     - name: 3. Install Tailscale
       run: |
-        # Download & install
-        curl -L -o ts.msi https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi
-        msiexec /i ts.msi /quiet /norestart
+        Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile ts.msi
+        Start-Process msiexec.exe -ArgumentList '/i ts.msi /quiet /norestart' -Wait
         echo "Tailscale installed"
 
     - name: 4. Connect Tailscale
       run: |
-        # Connect pakai auth key
-        & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }}
-        # Dapat IP
-        sleep 10
-        $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
-        echo "IP=$ip" >> $env:GITHUB_ENV
+        & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=rdp-github
+        Start-Sleep -Seconds 10
+        $ip = (& "C:\Program Files\Tailscale\tailscale.exe" ip -4).Trim()
+        "IP=$ip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
         echo "IP Address: $ip"
 
     - name: 5. TAMPILAN SIMPLE
@@ -53,21 +49,17 @@ jobs:
         echo "================================"
         echo "      RDP SIAP DIPAKAI"
         echo "================================"
-        echo "IP       : $env:IP:3389"
+        echo "IP       : ${env:IP}:3389"
         echo "Username : Skyro"
-        echo "Password : $env:PASSWORD"
-        echo "================================"
-        echo "Command  : mstsc /v:$env`:3389"
+        echo "Password : ${env:PASSWORD}"
+        echo "Command  : mstsc /v:${env:IP}:3389"
         echo "================================"
 
     - name: 6. JALAN TERUS
       run: |
-        echo "================================"
-        echo "RDP JALAN - Cancel untuk stop"
-        echo "================================"
         $no = 1
         while ($true) {
-          echo "$no. RDP Aktif - IP: $env:IP:3389"
+          echo "$no. RDP aktif - IP: ${env:IP}:3389"
           $no++
-          sleep 60
+          Start-Sleep -Seconds 60
         }
